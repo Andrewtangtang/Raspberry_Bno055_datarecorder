@@ -19,7 +19,7 @@ from sensor_ui import SensorUI
 i2c = board.I2C()  # uses board.SCL and board.SDA
 sensor = adafruit_bno055.BNO055_I2C(i2c)
 # Set calibration offsets
-# 更新加速度計偏移量
+# update calibration offsets
 calibration_data = {
     "accel_offset_x": -20,    
     "accel_offset_y": -49, 
@@ -73,6 +73,8 @@ latest_mag = None
 latest_timestamp = None
 latest_timestamp_str = None
 latest_error = None
+start_time = None  # For tracking duration
+elapsed_ms = 0  # Elapsed time in milliseconds
 
 # Create a dictionary to hold global variables that need to be shared with the UI
 global_vars = {
@@ -87,7 +89,10 @@ global_vars = {
     'latest_timestamp_str': latest_timestamp_str,
     'latest_error': latest_error,
     'csv_filename': csv_filename,
-    'google_uploader': google_uploader
+    'google_uploader': google_uploader,
+    'custom_filename_provided': False,  # Flag to indicate if user provided a custom filename
+    'start_time': start_time,  # Time when recording started
+    'elapsed_ms': elapsed_ms  # Elapsed time in milliseconds
 }
 
 
@@ -97,17 +102,30 @@ def collect_data():
     
     print("Data collection function running in separate thread")
     
-    # Create a new CSV file with date and time in filename
-    os.makedirs(csv_dir, exist_ok=True)
-    current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    csv_filename = f"{csv_dir}{current_time}.csv"
-    global_vars['csv_filename'] = csv_filename  # Update in the global_vars dictionary
-    print(f"Creating new CSV file: {csv_filename}")
+    # Check if a custom filename was provided by the user
+    custom_filename_provided = global_vars.get('custom_filename_provided', False)
+    
+    if not custom_filename_provided:
+        # No custom filename provided, create a new one with current date and time
+        os.makedirs(csv_dir, exist_ok=True)
+        current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        csv_filename = f"{csv_dir}{current_time}.csv"
+        global_vars['csv_filename'] = csv_filename  # Update in the global_vars dictionary
+        print(f"Creating new CSV file with auto-generated name: {csv_filename}")
+    else:
+        # Use the custom filename already set in global_vars by SensorUI
+        csv_filename = global_vars['csv_filename']
+        os.makedirs(os.path.dirname(csv_filename), exist_ok=True)
+        print(f"Creating new CSV file with user-provided name: {csv_filename}")
     
     # Initialize CSV file
     with open(csv_filename, 'w', newline='') as csvfile:
         csv_writer = csv.writer(csvfile)
         csv_writer.writerow(csv_header)
+    
+    # Initialize recording start time
+    recording_start_time = None
+    running = global_vars['running']
     
     while running:
         # Check global vars instead of directly accessing globals
@@ -115,9 +133,19 @@ def collect_data():
         running = global_vars['running']
         
         if collecting_data:  # Only collect data when the start button has been pressed
+            # Initialize start time when we first start collecting
+            if recording_start_time is None:
+                recording_start_time = time.time()
+                global_vars['start_time'] = recording_start_time
+            
+            # Calculate elapsed time since recording started (in milliseconds)
+            current_time = time.time()
+            elapsed_ms = int((current_time - recording_start_time) * 1000)
+            global_vars['elapsed_ms'] = elapsed_ms
+            
             try:
                 # Get sensor data - priority on speed and accuracy
-                start_time = time.time()
+                iteration_start_time = time.time()  # For timing this iteration
                 gyro = sensor.gyro
                 accel = sensor.acceleration
                 mag = sensor.magnetic
@@ -157,8 +185,8 @@ def collect_data():
                 global_vars['packet_counter'] = packet_counter
                 
                 # Calculate sleep time to maintain desired frequency
-                elapsed = time.time() - start_time
-                sleep_time = max(0, 1/FREQUENCY - elapsed)  # Ensure we don't get negative sleep time
+                iteration_elapsed = time.time() - iteration_start_time
+                sleep_time = max(0, 1/FREQUENCY - iteration_elapsed)  # Ensure we don't get negative sleep time
                 time.sleep(sleep_time)
                 
             except Exception as e:
@@ -167,7 +195,12 @@ def collect_data():
                 global_vars['latest_error'] = str(e)
                 time.sleep(0.5)
         else:
-            # If not collecting data, just sleep briefly to avoid consuming CPU
+            # If not collecting data, reset time tracking
+            recording_start_time = None
+            global_vars['start_time'] = None
+            global_vars['elapsed_ms'] = 0
+            
+            # Sleep briefly to avoid consuming CPU
             time.sleep(0.1)
     
     print("Data collection function exited")
