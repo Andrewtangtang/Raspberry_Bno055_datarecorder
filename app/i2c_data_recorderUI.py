@@ -6,18 +6,52 @@ import board
 import adafruit_bno055
 import serial
 import csv
-import tkinter as tk
-from tkinter import ttk
-from datetime import datetime
 import threading
 import os
+from datetime import datetime
 from upload_togoogle import GoogleDriveUploader
+# Import SensorUI from the separate file
+from sensor_ui import SensorUI
+
+
 
 
 i2c = board.I2C()  # uses board.SCL and board.SDA
 sensor = adafruit_bno055.BNO055_I2C(i2c)
+# Set calibration offsets
+# 更新加速度計偏移量
+calibration_data = {
+    "accel_offset_x": -20,    
+    "accel_offset_y": -49, 
+    "accel_offset_z": -42,     
+    "gyro_offset_x": 0,
+    "gyro_offset_y": -1,
+    "gyro_offset_z": 2,
+    "mag_offset_x": -216,
+    "mag_offset_y": -76,
+    "mag_offset_z": 250,
+    "accel_radius": 1000,  
+    "mag_radius": 1000
+}
+
+sensor.offsets_accelerometer = (
+    calibration_data["accel_offset_x"],
+    calibration_data["accel_offset_y"],
+    calibration_data["accel_offset_z"]
+)
+sensor.offsets_gyroscope = (
+    calibration_data["gyro_offset_x"],
+    calibration_data["gyro_offset_y"],
+    calibration_data["gyro_offset_z"]
+)
+sensor.offsets_magnetometer = (
+    calibration_data["mag_offset_x"],
+    calibration_data["mag_offset_y"],
+    calibration_data["mag_offset_z"]
+)
+
+
 google_uploader = GoogleDriveUploader()
-last_val = 0xFFFF
 
 # CSV file settings
 csv_dir = "sensor_data/"
@@ -40,215 +74,26 @@ latest_timestamp = None
 latest_timestamp_str = None
 latest_error = None
 
-# Create UI management class
-class SensorUI:
-    def __init__(self):
-        self.root = None
-        self.stop_button = None
-        self.upload_button = None
-        self.exit_button = None
-        self.packet_label = None
-        self.time_label = None
-        self.gyro_label = None
-        self.accel_label = None
-        self.mag_label = None
-        self.error_label = None
-        self.status_label = None
-        self.upload_label = None
-        self.data_thread = None
+# Create a dictionary to hold global variables that need to be shared with the UI
+global_vars = {
+    'packet_counter': packet_counter,
+    'running': running,
+    'ui_active': ui_active,
+    'collecting_data': collecting_data,
+    'latest_gyro': latest_gyro,
+    'latest_accel': latest_accel,
+    'latest_mag': latest_mag,
+    'latest_timestamp': latest_timestamp,
+    'latest_timestamp_str': latest_timestamp_str,
+    'latest_error': latest_error,
+    'csv_filename': csv_filename,
+    'google_uploader': google_uploader
+}
 
-    def setup_ui(self):
-        # Create the GUI
-        self.root = tk.Tk()
-        self.root.title("I2C Data Recorder")
-        self.root.geometry("500x350")
-        self.root.resizable(False, False)
-        self.root.protocol("WM_DELETE_WINDOW", self.exit_application)
-
-        # Create a frame for content with some padding
-        frame = ttk.Frame(self.root, padding="10")
-        frame.pack(fill=tk.BOTH, expand=True)
-
-        # Create labels for displaying data
-        title_label = ttk.Label(frame, text="I2C Sensor Data Recorder", font=("Arial", 16, "bold"))
-        title_label.pack(pady=5)
-
-        self.status_label = ttk.Label(frame, text="Status: Ready", foreground="blue", font=("Arial", 10, "bold"))
-        self.status_label.pack(pady=2)
-
-        self.packet_label = ttk.Label(frame, text="Data Count: 0")
-        self.packet_label.pack(pady=2)
-
-        self.time_label = ttk.Label(frame, text="Timestamp: --")
-        self.time_label.pack(pady=2)
-
-        self.gyro_label = ttk.Label(frame, text="Gyroscope (rad/s): --")
-        self.gyro_label.pack(pady=2)
-
-        self.accel_label = ttk.Label(frame, text="Accelerometer (m/s^2): --")
-        self.accel_label.pack(pady=2)
-        
-        self.mag_label = ttk.Label(frame, text="Magnetometer (microteslas): --")
-        self.mag_label.pack(pady=2)
-
-        self.error_label = ttk.Label(frame, text="", foreground="red")
-        self.error_label.pack(pady=2)
-        
-        self.upload_label = ttk.Label(frame, text="", foreground="blue")
-        self.upload_label.pack(pady=2)
-
-        # Create buttons
-        button_frame = ttk.Frame(frame)
-        button_frame.pack(pady=10)
-        
-        self.start_button = ttk.Button(button_frame, text="Start Recording", command=self.start_collection)
-        self.start_button.pack(side=tk.LEFT, padx=5)
-
-        self.stop_button = ttk.Button(button_frame, text="Stop Recording", command=self.stop_collection, state="disabled")
-        self.stop_button.pack(side=tk.LEFT, padx=5)
-
-        self.upload_button = ttk.Button(button_frame, text="Upload", command=self.upload_to_drive, state="disabled")
-        self.upload_button.pack(side=tk.LEFT, padx=5)
-        
-        self.exit_button = ttk.Button(button_frame, text="Exit", command=self.exit_application, state="disabled")
-        self.exit_button.pack(side=tk.LEFT, padx=5)
-        
-        # Start UI updates
-        self.update_ui()
-        
-    def start_collection(self):
-        global collecting_data, running
-        
-        # Make sure we're in a running state
-        running = True
-        collecting_data = True
-        
-        # Start data collection thread if not already running
-        if self.data_thread is None or not self.data_thread.is_alive():
-            self.data_thread = threading.Thread(target=collect_data)
-            self.data_thread.daemon = True
-            self.data_thread.start()
-        
-        self.status_label.config(text="Status: Running", foreground="green")
-        self.start_button.config(state="disabled")
-        self.stop_button.config(state="normal")
-        self.upload_button.config(state="disabled")
-        self.exit_button.config(state="disabled")
-        print("Data collection started")
-
-    def update_ui(self):
-        global packet_counter, latest_gyro, latest_accel, latest_mag, latest_timestamp_str, latest_error, ui_active
-        
-        if running:
-            # Update data display
-            self.packet_label.config(text=f"Data Count: {packet_counter}")
-            
-            if latest_timestamp_str:
-                self.time_label.config(text=f"Timestamp: {latest_timestamp_str}")
-            
-            if latest_gyro:
-                self.gyro_label.config(text=f"Gyroscope (rad/s): {latest_gyro}")
-            
-            if latest_accel:
-                self.accel_label.config(text=f"Accelerometer (m/s^2): {latest_accel}")
-                
-            if latest_mag:
-                self.mag_label.config(text=f"Magnetometer (microteslas): {latest_mag}")
-            
-            if latest_error:
-                self.error_label.config(text=f"Error: {latest_error}")
-            
-            # Schedule the next UI update (less frequent to not slow down data collection)
-            self.root.after(100, self.update_ui)
-        
-    def stop_collection(self):
-        global running, collecting_data
-        collecting_data = False
-        self.status_label.config(text="Status: Stopped", foreground="red")
-        self.stop_button.config(state="disabled")
-        self.start_button.config(state="normal")
-        self.upload_button.config(state="normal")
-        self.exit_button.config(state="normal")
-        print("Data collection stopped")
-
-    def upload_to_drive(self):
-        global csv_filename
-        
-        # Disable all buttons during upload
-        self.upload_button.config(state="disabled")
-        self.start_button.config(state="disabled")
-        self.stop_button.config(state="disabled")
-        self.exit_button.config(state="disabled")
-        
-        # Show uploading status
-        self.status_label.config(text="Status: Uploading to cloud", foreground="blue")
-        
-        # Upload the CSV file to Google Drive if it exists
-        if csv_filename and os.path.exists(csv_filename):
-            try:
-                self.upload_label.config(text=f"Uploading {os.path.basename(csv_filename)} to Google Drive...")
-                self.root.update()  # Force UI update
-                
-                print(f"Uploading {csv_filename} to Google Drive...")
-                file_id = google_uploader.upload_file(csv_filename)
-                
-                if file_id:
-                    success_msg = f"Successfully uploaded to Google Drive with ID: {file_id}"
-                    self.upload_label.config(text=success_msg, foreground="green")
-                    print(f"Successfully uploaded {csv_filename} to Google Drive with ID: {file_id}")
-                    # Display the success message for 1 second per requirements
-                    self.root.update()
-                    time.sleep(1)
-                else:
-                    fail_msg = f"Failed to upload to Google Drive"
-                    self.upload_label.config(text=fail_msg, foreground="red")
-                    print(f"Failed to upload {csv_filename} to Google Drive")
-                    # Display the failure message for 3 seconds per requirements
-                    self.root.update()
-                    time.sleep(3)
-                
-            except Exception as e:
-                error_msg = f"Error: {str(e)}"
-                self.upload_label.config(text=error_msg, foreground="red")
-                self.root.update()
-                print(f"Error uploading file to Google Drive: {e}")
-                # Display the error message for 3 seconds per requirements
-                time.sleep(3)
-        else:
-            self.upload_label.config(text="No data file to upload", foreground="orange")
-            self.root.update()
-            time.sleep(2)
-        
-        # After upload is complete, enable the exit button and start button
-        self.start_button.config(state="normal")
-        self.exit_button.config(state="normal")
-    
-    def exit_application(self):
-        global ui_active, running, collecting_data
-        
-        # First stop data collection
-        running = False  # Signal data collection thread to exit
-        collecting_data = False
-        
-        # Wait for data collection thread to finish if it's running
-        if self.data_thread and self.data_thread.is_alive():
-            print("Waiting for data collection thread to terminate...")
-            self.data_thread.join(timeout=2)
-        
-        # Now we can safely exit
-        ui_active = False
-        self.root.destroy()
-        
-    def run(self):
-        global ui_active
-        ui_active = True
-        self.setup_ui()
-        self.root.mainloop()
-        print("UI thread terminated")
 
 # Data collection function - now runs in a separate thread
 def collect_data():
-    global packet_counter, running, latest_gyro, latest_accel, latest_mag, latest_timestamp, latest_timestamp_str, latest_error, collecting_data, csv_filename
+    global packet_counter, running, latest_gyro, latest_accel, latest_mag, latest_timestamp, latest_timestamp_str, latest_error, collecting_data, csv_filename, global_vars
     
     print("Data collection function running in separate thread")
     
@@ -256,6 +101,7 @@ def collect_data():
     os.makedirs(csv_dir, exist_ok=True)
     current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     csv_filename = f"{csv_dir}{current_time}.csv"
+    global_vars['csv_filename'] = csv_filename  # Update in the global_vars dictionary
     print(f"Creating new CSV file: {csv_filename}")
     
     # Initialize CSV file
@@ -264,6 +110,10 @@ def collect_data():
         csv_writer.writerow(csv_header)
     
     while running:
+        # Check global vars instead of directly accessing globals
+        collecting_data = global_vars['collecting_data']  
+        running = global_vars['running']
+        
         if collecting_data:  # Only collect data when the start button has been pressed
             try:
                 # Get sensor data - priority on speed and accuracy
@@ -293,9 +143,18 @@ def collect_data():
                 latest_timestamp = timestamp
                 latest_timestamp_str = timestamp_str
                 latest_error = None
+                
+                # Update the global_vars dictionary
+                global_vars['latest_gyro'] = gyro
+                global_vars['latest_accel'] = accel
+                global_vars['latest_mag'] = mag
+                global_vars['latest_timestamp'] = timestamp
+                global_vars['latest_timestamp_str'] = timestamp_str
+                global_vars['latest_error'] = None
 
                 # Increment counter
                 packet_counter += 1
+                global_vars['packet_counter'] = packet_counter
                 
                 # Calculate sleep time to maintain desired frequency
                 elapsed = time.time() - start_time
@@ -305,6 +164,7 @@ def collect_data():
             except Exception as e:
                 print("Error occurred:", e)
                 latest_error = str(e)
+                global_vars['latest_error'] = str(e)
                 time.sleep(0.5)
         else:
             # If not collecting data, just sleep briefly to avoid consuming CPU
@@ -314,8 +174,10 @@ def collect_data():
 
 # Main function to start the application
 def main():
-    # Create the UI object
-    sensor_ui = SensorUI()
+    global global_vars
+    
+    # Create the UI object with references to the data collection function and global variables
+    sensor_ui = SensorUI(collect_data, global_vars)
     
     # Run the UI in the main thread
     sensor_ui.run()
