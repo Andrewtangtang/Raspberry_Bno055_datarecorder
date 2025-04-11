@@ -45,6 +45,7 @@ class SensorUI:
     def __init__(self):
         self.root = None
         self.stop_button = None
+        self.upload_button = None
         self.exit_button = None
         self.packet_label = None
         self.time_label = None
@@ -54,6 +55,7 @@ class SensorUI:
         self.error_label = None
         self.status_label = None
         self.upload_label = None
+        self.data_thread = None
 
     def setup_ui(self):
         # Create the GUI
@@ -105,27 +107,38 @@ class SensorUI:
         self.stop_button = ttk.Button(button_frame, text="Stop Recording", command=self.stop_collection, state="disabled")
         self.stop_button.pack(side=tk.LEFT, padx=5)
 
-        self.exit_button = ttk.Button(button_frame, text="Exit", command=self.exit_application)
+        self.upload_button = ttk.Button(button_frame, text="Upload", command=self.upload_to_drive, state="disabled")
+        self.upload_button.pack(side=tk.LEFT, padx=5)
+        
+        self.exit_button = ttk.Button(button_frame, text="Exit", command=self.exit_application, state="disabled")
         self.exit_button.pack(side=tk.LEFT, padx=5)
         
         # Start UI updates
         self.update_ui()
         
     def start_collection(self):
-        global collecting_data
+        global collecting_data, running
+        
+        # Make sure we're in a running state
+        running = True
         collecting_data = True
+        
+        # Start data collection thread if not already running
+        if self.data_thread is None or not self.data_thread.is_alive():
+            self.data_thread = threading.Thread(target=collect_data)
+            self.data_thread.daemon = True
+            self.data_thread.start()
+        
         self.status_label.config(text="Status: Running", foreground="green")
         self.start_button.config(state="disabled")
         self.stop_button.config(state="normal")
+        self.upload_button.config(state="disabled")
         self.exit_button.config(state="disabled")
         print("Data collection started")
 
     def update_ui(self):
         global packet_counter, latest_gyro, latest_accel, latest_mag, latest_timestamp_str, latest_error, ui_active
         
-        if not ui_active:
-            return
-            
         if running:
             # Update data display
             self.packet_label.config(text=f"Data Count: {packet_counter}")
@@ -154,20 +167,18 @@ class SensorUI:
         self.status_label.config(text="Status: Stopped", foreground="red")
         self.stop_button.config(state="disabled")
         self.start_button.config(state="normal")
+        self.upload_button.config(state="normal")
         self.exit_button.config(state="normal")
         print("Data collection stopped")
 
-    def exit_application(self):
-        global ui_active, running, collecting_data, csv_filename
+    def upload_to_drive(self):
+        global csv_filename
         
-        # Don't exit immediately, just disable controls and show uploading status
-        self.exit_button.config(state="disabled")
+        # Disable all buttons during upload
+        self.upload_button.config(state="disabled")
         self.start_button.config(state="disabled")
         self.stop_button.config(state="disabled")
-        
-        # First stop data collection
-        running = False  # Signal main loop to exit
-        collecting_data = False
+        self.exit_button.config(state="disabled")
         
         # Show uploading status
         self.status_label.config(text="Status: Uploading to cloud", foreground="blue")
@@ -185,14 +196,14 @@ class SensorUI:
                     success_msg = f"Successfully uploaded to Google Drive with ID: {file_id}"
                     self.upload_label.config(text=success_msg, foreground="green")
                     print(f"Successfully uploaded {csv_filename} to Google Drive with ID: {file_id}")
-                    # Display the success message for 2 seconds before closing
+                    # Display the success message for 1 second per requirements
                     self.root.update()
-                    time.sleep(2)
+                    time.sleep(1)
                 else:
                     fail_msg = f"Failed to upload to Google Drive"
                     self.upload_label.config(text=fail_msg, foreground="red")
                     print(f"Failed to upload {csv_filename} to Google Drive")
-                    # Display the failure message for 3 seconds before closing
+                    # Display the failure message for 3 seconds per requirements
                     self.root.update()
                     time.sleep(3)
                 
@@ -201,11 +212,28 @@ class SensorUI:
                 self.upload_label.config(text=error_msg, foreground="red")
                 self.root.update()
                 print(f"Error uploading file to Google Drive: {e}")
+                # Display the error message for 3 seconds per requirements
                 time.sleep(3)
         else:
             self.upload_label.config(text="No data file to upload", foreground="orange")
             self.root.update()
             time.sleep(2)
+        
+        # After upload is complete, enable the exit button and start button
+        self.start_button.config(state="normal")
+        self.exit_button.config(state="normal")
+    
+    def exit_application(self):
+        global ui_active, running, collecting_data
+        
+        # First stop data collection
+        running = False  # Signal data collection thread to exit
+        collecting_data = False
+        
+        # Wait for data collection thread to finish if it's running
+        if self.data_thread and self.data_thread.is_alive():
+            print("Waiting for data collection thread to terminate...")
+            self.data_thread.join(timeout=2)
         
         # Now we can safely exit
         ui_active = False
@@ -218,14 +246,13 @@ class SensorUI:
         self.root.mainloop()
         print("UI thread terminated")
 
-# Main data collection function - now runs in the main thread
+# Data collection function - now runs in a separate thread
 def collect_data():
-    global packet_counter, running, latest_gyro, latest_accel, latest_mag, latest_timestamp, latest_timestamp_str, latest_error, collecting_data
+    global packet_counter, running, latest_gyro, latest_accel, latest_mag, latest_timestamp, latest_timestamp_str, latest_error, collecting_data, csv_filename
     
-    print("Data collection function running in main thread")
+    print("Data collection function running in separate thread")
     
     # Create a new CSV file with date and time in filename
-    global csv_filename
     os.makedirs(csv_dir, exist_ok=True)
     current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     csv_filename = f"{csv_dir}{current_time}.csv"
@@ -282,27 +309,16 @@ def collect_data():
         else:
             # If not collecting data, just sleep briefly to avoid consuming CPU
             time.sleep(0.1)
+    
+    print("Data collection function exited")
 
-# Main function to start both threads
+# Main function to start the application
 def main():
     # Create the UI object
     sensor_ui = SensorUI()
     
-    # Start UI in a separate thread
-    ui_thread = threading.Thread(target=sensor_ui.run)
-    ui_thread.daemon = True  # Thread will close when main program exits
-    ui_thread.start()
-    
-    # Start data collection in the main thread
-    # It will wait for the start button press before actually collecting data
-    collect_data()
-    
-    print("Data collection function exited")
-    
-    # Wait for UI thread to finish if it's still running
-    if ui_active and ui_thread.is_alive():
-        print("Waiting for UI thread to terminate...")
-        ui_thread.join(timeout=3)
+    # Run the UI in the main thread
+    sensor_ui.run()
     
     print("Program finished")
 
