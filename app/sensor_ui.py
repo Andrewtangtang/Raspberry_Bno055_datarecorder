@@ -66,6 +66,10 @@ class SensorUI:
         self.duration_label = ttk.Label(info_frame, text="Duration: 0 ms", font=("Arial", 16, "bold"), foreground="#006600")
         self.duration_label.pack(side=tk.RIGHT, padx=20)
 
+        # Sensor value labels (initially blank - will be shown during recording)
+        self.gyro_label = ttk.Label(data_frame, text="", font=("Arial", 12))
+        self.accel_label = ttk.Label(data_frame, text="", font=("Arial", 12))
+
         # Add spacer with a horizontal line for better visual separation
         separator = ttk.Separator(frame, orient='horizontal')
         separator.pack(fill='x', pady=15, padx=10)
@@ -182,6 +186,10 @@ class SensorUI:
             self.data_thread.start()
             # Start UI updates
             self.update_ui()
+
+            # Show sensor labels when recording starts
+            self.gyro_label.pack(pady=2)
+            self.accel_label.pack(pady=2)
         
         self.status_label.config(text="Status: RECORDING", foreground="green", font=("Arial", 14, "bold"))
         self.start_button.config(state="disabled")
@@ -216,6 +224,12 @@ class SensorUI:
             # Stop the UI update loop
             self.root.after_cancel(self.update_ui)
         
+        # Update sensor value displays
+        if latest_gyro is not None:
+            self.gyro_label.config(text=f"Gyro (deg/s): {latest_gyro[0]:.2f}, {latest_gyro[1]:.2f}, {latest_gyro[2]:.2f}")
+        if latest_accel is not None:
+            self.accel_label.config(text=f"Accel (g): {latest_accel[0]:.2f}, {latest_accel[1]:.2f}, {latest_accel[2]:.2f}")
+    
     def stop_collection(self):
         # Update global variables through the globals dictionary
         self.globals['running'] = False
@@ -230,6 +244,10 @@ class SensorUI:
         self.data_thread = None
         print("Data collection stopped - can only upload or exit")
 
+        # Hide sensor labels when recording stops
+        self.gyro_label.pack_forget()
+        self.accel_label.pack_forget()
+    
     def upload_to_drive(self):
         # Get CSV filename from globals
         csv_filename = self.globals['csv_filename']

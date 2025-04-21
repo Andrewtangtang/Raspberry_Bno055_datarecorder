@@ -21,8 +21,8 @@ sensor = adafruit_bno055.BNO055_I2C(i2c)
 # Set calibration offsets
 # update calibration offsets
 calibration_data = {
-    "accel_offset_x": -20,    
-    "accel_offset_y": -49, 
+    "accel_offset_x": -35,    
+    "accel_offset_y": -43, 
     "accel_offset_z": -42,     
     "gyro_offset_x": 0,
     "gyro_offset_y": -1,
